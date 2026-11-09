@@ -3,6 +3,7 @@
 use crate::cast::As;
 use crate::types::Color;
 use core::cmp::max;
+use core::ops::{BitOr, BitOrAssign};
 
 pub mod eps;
 pub mod image;
@@ -11,6 +12,102 @@ pub mod string;
 pub mod svg;
 pub mod unicode;
 
+//------------------------------------------------------------------------------
+//{{{ Corners
+
+/// A set of corners of a module.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Corners(u8);
+
+impl Corners {
+    /// No corner.
+    pub const NONE: Self = Corners(0);
+    /// The top-left corner.
+    pub const TOP_LEFT: Self = Corners(1);
+    /// The top-right corner.
+    pub const TOP_RIGHT: Self = Corners(2);
+    /// The bottom-right corner.
+    pub const BOTTOM_RIGHT: Self = Corners(4);
+    /// The bottom-left corner.
+    pub const BOTTOM_LEFT: Self = Corners(8);
+
+    /// Whether all corners of `other` are in `self`.
+    pub const fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether the set contains no corner.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+}
+
+impl BitOr for Corners {
+    type Output = Self;
+
+    fn bitor(self, other: Self) -> Self {
+        Corners(self.0 | other.0)
+    }
+}
+
+impl BitOrAssign for Corners {
+    fn bitor_assign(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+}
+
+/// Whether the pixel at (`x`, `y`), relative to the top-left of a
+/// `width`×`height` rectangle, falls outside one of its `corners` rounded with
+/// radius `rx`×`ry`.
+///
+/// A pixel is considered inside the rounded corner when its center lies within
+/// the ellipse. The radius must not exceed half of the rectangle's size.
+#[cfg(feature = "image")]
+pub(crate) fn is_outside_rounded_corner(
+    width: u32,
+    height: u32,
+    (rx, ry): (u32, u32),
+    corners: Corners,
+    x: u32,
+    y: u32,
+) -> bool {
+    if rx == 0 || ry == 0 {
+        return false;
+    }
+    // Distance (in pixels) from the nearest vertical and horizontal edges.
+    let (dx, is_right) = if x < rx {
+        (x, false)
+    } else if x >= width - rx {
+        (width - 1 - x, true)
+    } else {
+        return false;
+    };
+    let (dy, is_bottom) = if y < ry {
+        (y, false)
+    } else if y >= height - ry {
+        (height - 1 - y, true)
+    } else {
+        return false;
+    };
+    let corner = match (is_right, is_bottom) {
+        (false, false) => Corners::TOP_LEFT,
+        (true, false) => Corners::TOP_RIGHT,
+        (true, true) => Corners::BOTTOM_RIGHT,
+        (false, true) => Corners::BOTTOM_LEFT,
+    };
+    if !corners.contains(corner) {
+        return false;
+    }
+
+    // Everything is doubled so the pixel center (d + 0.5) stays integral.
+    let a = u64::from(2 * (rx - dx) - 1);
+    let b = u64::from(2 * (ry - dy) - 1);
+    let rx2 = u64::from(2 * rx);
+    let ry2 = u64::from(2 * ry);
+    a * a * ry2 * ry2 + b * b * rx2 * rx2 > rx2 * rx2 * ry2 * ry2
+}
+
+//}}}
 //------------------------------------------------------------------------------
 //{{{ Pixel trait
 
@@ -56,6 +153,25 @@ pub trait Canvas: Sized {
         }
     }
 
+    /// Draws a dark rectangle with dimensions `width`×`height` at the (`left`,
+    /// `top`) coordinate, with the given `corners` rounded by a radius of
+    /// `rx`×`ry`.
+    ///
+    /// The default implementation ignores the rounding and draws a plain
+    /// rectangle.
+    fn draw_dark_rounded_rect(
+        &mut self,
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+        radius: (u32, u32),
+        corners: Corners,
+    ) {
+        let _ = (radius, corners);
+        self.draw_dark_rect(left, top, width, height);
+    }
+
     /// Finalize the canvas to a real image.
     fn into_image(self) -> Self::Image;
 }
@@ -71,6 +187,7 @@ pub struct Renderer<'a, P: Pixel> {
     modules_count: u32, // <- we call it `modules_count` here to avoid ambiguity of `width`.
     quiet_zone: u32,
     module_size: (u32, u32),
+    corner_radius: f32,
 
     dark_color: P,
     light_color: P,
@@ -90,6 +207,7 @@ impl<'a, P: Pixel> Renderer<'a, P> {
             modules_count: modules_count.as_u32(),
             quiet_zone,
             module_size: P::default_unit_size(),
+            corner_radius: 0.0,
             dark_color: P::default_color(Color::Dark),
             light_color: P::default_color(Color::Light),
             has_quiet_zone: true,
@@ -123,6 +241,21 @@ impl<'a, P: Pixel> Renderer<'a, P> {
     /// Sets the size of each module in pixels. Default is 8×8.
     pub fn module_dimensions(&mut self, width: u32, height: u32) -> &mut Self {
         self.module_size = (max(width, 1), max(height, 1));
+        self
+    }
+
+    /// Sets the radius of the rounded corners of dark modules, as a fraction of
+    /// the module size. The value is clamped to 0.0–0.5, and the resulting
+    /// radius is rounded to whole pixels. Default is 0.0 (square modules).
+    ///
+    /// Only the corners exposed to light modules are rounded, so adjacent dark
+    /// modules stay connected. For instance, with 32×32 modules a ratio of 0.1
+    /// gives a 3px radius, and 0.5 turns isolated modules into circles.
+    ///
+    /// Only the SVG and raster image renderers support rounded corners; other
+    /// renderers ignore this setting.
+    pub fn corner_radius(&mut self, ratio: f32) -> &mut Self {
+        self.corner_radius = ratio.clamp(0.0, 0.5);
         self
     }
 
@@ -190,13 +323,21 @@ impl<'a, P: Pixel> Renderer<'a, P> {
         let real_width = width * mw;
         let real_height = width * mh;
 
+        let radius = self.corner_radius_in_pixels();
+        let is_rounded = radius.0 > 0 && radius.1 > 0;
+
         let mut canvas = P::Canvas::new(real_width, real_height, self.dark_color, self.light_color);
         let mut i = 0;
         for y in 0..width {
             for x in 0..width {
                 if qz <= x && x < w + qz && qz <= y && y < w + qz {
                     if self.content[i] != Color::Light {
-                        canvas.draw_dark_rect(x * mw, y * mh, mw, mh);
+                        if is_rounded {
+                            let corners = self.convex_corners(x - qz, y - qz);
+                            canvas.draw_dark_rounded_rect(x * mw, y * mh, mw, mh, radius, corners);
+                        } else {
+                            canvas.draw_dark_rect(x * mw, y * mh, mw, mh);
+                        }
                     }
                     i += 1;
                 }
@@ -204,6 +345,51 @@ impl<'a, P: Pixel> Renderer<'a, P> {
         }
 
         canvas.into_image()
+    }
+
+    /// Converts the corner radius ratio into pixels, so that two rounded
+    /// corners never overlap within a module.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, clippy::cast_precision_loss)]
+    fn corner_radius_in_pixels(&self) -> (u32, u32) {
+        let (mw, mh) = self.module_size;
+        let rx = (self.corner_radius * mw as f32 + 0.5) as u32;
+        let ry = (self.corner_radius * mh as f32 + 0.5) as u32;
+        (rx.min(mw / 2), ry.min(mh / 2))
+    }
+
+    /// Whether the module at (`x`, `y`) is dark. Modules outside the symbol
+    /// are light.
+    fn is_dark(&self, x: isize, y: isize) -> bool {
+        let n = self.modules_count.as_isize();
+        if x < 0 || y < 0 || x >= n || y >= n {
+            return false;
+        }
+        self.content[(y * n + x).as_usize()] != Color::Light
+    }
+
+    /// Returns the corners of the dark module at (`x`, `y`) that are exposed,
+    /// i.e. whose two adjacent sides both face a light module.
+    fn convex_corners(&self, x: u32, y: u32) -> Corners {
+        let (x, y) = (x.as_isize(), y.as_isize());
+        let top = self.is_dark(x, y - 1);
+        let bottom = self.is_dark(x, y + 1);
+        let left = self.is_dark(x - 1, y);
+        let right = self.is_dark(x + 1, y);
+
+        let mut corners = Corners::NONE;
+        if !top && !left {
+            corners |= Corners::TOP_LEFT;
+        }
+        if !top && !right {
+            corners |= Corners::TOP_RIGHT;
+        }
+        if !bottom && !right {
+            corners |= Corners::BOTTOM_RIGHT;
+        }
+        if !bottom && !left {
+            corners |= Corners::BOTTOM_LEFT;
+        }
+        corners
     }
 }
 

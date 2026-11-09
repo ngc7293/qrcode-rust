@@ -2,7 +2,7 @@
 
 #![cfg(feature = "image")]
 
-use crate::render::{Canvas, Pixel};
+use crate::render::{is_outside_rounded_corner, Canvas, Corners, Pixel};
 use crate::types::Color;
 
 use image::{ImageBuffer, Luma, LumaA, Primitive, Rgb, Rgba};
@@ -45,6 +45,24 @@ impl<P: image::Pixel + 'static> Canvas for (P, ImageBuffer<P, Vec<P::Subpixel>>)
 
     fn draw_dark_pixel(&mut self, x: u32, y: u32) {
         self.1.put_pixel(x, y, self.0);
+    }
+
+    fn draw_dark_rounded_rect(
+        &mut self,
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+        radius: (u32, u32),
+        corners: Corners,
+    ) {
+        for y in 0..height {
+            for x in 0..width {
+                if !is_outside_rounded_corner(width, height, radius, corners, x, y) {
+                    self.draw_dark_pixel(left + x, top + y);
+                }
+            }
+        }
     }
 
     fn into_image(self) -> ImageBuffer<P, Vec<P::Subpixel>> {
@@ -155,6 +173,44 @@ mod render_tests {
         ];
 
         assert_eq!(image.dimensions(), (8, 4));
+        assert_eq!(image.into_raw(), expected);
+    }
+
+    #[test]
+    fn test_render_rounded_corners() {
+        let image = Renderer::<Luma<u8>>::new(&[Color::Dark, Color::Dark, Color::Light, Color::Light], 2, 1)
+            .quiet_zone(false)
+            .module_dimensions(4, 4)
+            .corner_radius(0.5)
+            .build();
+
+        #[rustfmt::skip]
+        let expected: &[u8] = &[
+            255,  0,  0,  0,  0,  0,  0,255,
+              0,  0,  0,  0,  0,  0,  0,  0,
+              0,  0,  0,  0,  0,  0,  0,  0,
+            255,  0,  0,  0,  0,  0,  0,255,
+            255,255,255,255,255,255,255,255,
+            255,255,255,255,255,255,255,255,
+            255,255,255,255,255,255,255,255,
+            255,255,255,255,255,255,255,255,
+        ];
+
+        assert_eq!(image.into_raw(), expected);
+    }
+
+    #[test]
+    fn test_render_rounded_corners_elliptical() {
+        let image = Renderer::<Luma<u8>>::new(&[Color::Dark], 1, 0).module_dimensions(8, 4).corner_radius(0.5).build();
+
+        #[rustfmt::skip]
+        let expected: &[u8] = &[
+            255,  0,  0,  0,  0,  0,  0,255,
+              0,  0,  0,  0,  0,  0,  0,  0,
+              0,  0,  0,  0,  0,  0,  0,  0,
+            255,  0,  0,  0,  0,  0,  0,255,
+        ];
+
         assert_eq!(image.into_raw(), expected);
     }
 }
