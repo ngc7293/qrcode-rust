@@ -92,6 +92,45 @@ impl<'a> RenderCanvas for Canvas<'a> {
         self.path.push('z');
     }
 
+    fn draw_dark_fillet(
+        &mut self,
+        left: u32,
+        top: u32,
+        width: u32,
+        height: u32,
+        (rx, ry): (u32, u32),
+        corners: Corners,
+    ) {
+        if corners.is_empty() || rx == 0 || ry == 0 {
+            return;
+        }
+        self.is_rounded = true;
+
+        // Each fillet goes from the corner along one edge, then curves back to
+        // the other edge. Traced clockwise, like the other subpaths.
+        let (right, bottom) = (left + width, top + height);
+        if corners.contains(Corners::TOP_LEFT) {
+            write!(self.path, "M{left} {top}h{rx}").unwrap();
+            write_arc(&mut self.path, (rx, ry), 0, "-", "");
+            self.path.push('z');
+        }
+        if corners.contains(Corners::TOP_RIGHT) {
+            write!(self.path, "M{right} {top}v{ry}").unwrap();
+            write_arc(&mut self.path, (rx, ry), 0, "-", "-");
+            self.path.push('z');
+        }
+        if corners.contains(Corners::BOTTOM_RIGHT) {
+            write!(self.path, "M{right} {bottom}h-{rx}").unwrap();
+            write_arc(&mut self.path, (rx, ry), 0, "", "-");
+            self.path.push('z');
+        }
+        if corners.contains(Corners::BOTTOM_LEFT) {
+            write!(self.path, "M{left} {bottom}v-{ry}").unwrap();
+            write_arc(&mut self.path, (rx, ry), 0, "", "");
+            self.path.push('z');
+        }
+    }
+
     fn into_image(self) -> String {
         format!(
             concat!(
@@ -157,6 +196,24 @@ mod render_tests {
             r##"<path fill="#000" d=""##,
             "M2 0h2v4h-2a2 2 0 0 1 -2 -2a2 2 0 0 1 2 -2z",
             "M4 0h2a2 2 0 0 1 2 2a2 2 0 0 1 -2 2h-2v-4z",
+            r#""/>"#,
+        )));
+    }
+
+    #[test]
+    fn test_render_rounded_inner_corners() {
+        let svg = Renderer::<SvgColor>::new(&[Color::Dark, Color::Dark, Color::Dark, Color::Light], 2, 1)
+            .quiet_zone(false)
+            .module_dimensions(4, 4)
+            .corner_radius(0.5)
+            .build();
+
+        assert!(svg.contains(concat!(
+            r##"<path fill="#000" d=""##,
+            "M2 0h2v4h-4v-2a2 2 0 0 1 2 -2z",
+            "M4 0h2a2 2 0 0 1 2 2a2 2 0 0 1 -2 2h-2v-4z",
+            "M0 4h4v2a2 2 0 0 1 -2 2a2 2 0 0 1 -2 -2v-2z",
+            "M4 4h2a2 2 0 0 0 -2 2z",
             r#""/>"#,
         )));
     }

@@ -65,6 +65,16 @@ impl<P: image::Pixel + 'static> Canvas for (P, ImageBuffer<P, Vec<P::Subpixel>>)
         }
     }
 
+    fn draw_dark_fillet(&mut self, left: u32, top: u32, width: u32, height: u32, radius: (u32, u32), corners: Corners) {
+        for y in 0..height {
+            for x in 0..width {
+                if is_outside_rounded_corner(width, height, radius, corners, x, y) {
+                    self.draw_dark_pixel(left + x, top + y);
+                }
+            }
+        }
+    }
+
     fn into_image(self) -> ImageBuffer<P, Vec<P::Subpixel>> {
         self.1
     }
@@ -209,6 +219,29 @@ mod render_tests {
               0,  0,  0,  0,  0,  0,  0,  0,
               0,  0,  0,  0,  0,  0,  0,  0,
             255,  0,  0,  0,  0,  0,  0,255,
+        ];
+
+        assert_eq!(image.into_raw(), expected);
+    }
+
+    #[test]
+    fn test_render_rounded_inner_corners() {
+        let image = Renderer::<Luma<u8>>::new(&[Color::Dark, Color::Dark, Color::Dark, Color::Light], 2, 1)
+            .quiet_zone(false)
+            .module_dimensions(4, 4)
+            .corner_radius(0.5)
+            .build();
+
+        #[rustfmt::skip]
+        let expected: &[u8] = &[
+            255,  0,  0,  0,  0,  0,  0,255,
+              0,  0,  0,  0,  0,  0,  0,  0,
+              0,  0,  0,  0,  0,  0,  0,  0,
+              0,  0,  0,  0,  0,  0,  0,255,
+              0,  0,  0,  0,  0,255,255,255,
+              0,  0,  0,  0,255,255,255,255,
+              0,  0,  0,  0,255,255,255,255,
+            255,  0,  0,255,255,255,255,255,
         ];
 
         assert_eq!(image.into_raw(), expected);

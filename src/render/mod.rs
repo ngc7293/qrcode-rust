@@ -172,6 +172,16 @@ pub trait Canvas: Sized {
         self.draw_dark_rect(left, top, width, height);
     }
 
+    /// Fills the given `corners` of the light rectangle with dimensions
+    /// `width`×`height` at the (`left`, `top`) coordinate, outside of a curve
+    /// of radius `rx`×`ry`. This rounds the inner corner formed by the dark
+    /// modules around it.
+    ///
+    /// The default implementation draws nothing.
+    fn draw_dark_fillet(&mut self, left: u32, top: u32, width: u32, height: u32, radius: (u32, u32), corners: Corners) {
+        let _ = (left, top, width, height, radius, corners);
+    }
+
     /// Finalize the canvas to a real image.
     fn into_image(self) -> Self::Image;
 }
@@ -249,7 +259,8 @@ impl<'a, P: Pixel> Renderer<'a, P> {
     /// radius is rounded to whole pixels. Default is 0.0 (square modules).
     ///
     /// Only the corners exposed to light modules are rounded, so adjacent dark
-    /// modules stay connected. For instance, with 32×32 modules a ratio of 0.1
+    /// modules stay connected. Inner corners, where dark modules bend around a
+    /// light one, are rounded with the same radius. For instance, with 32×32 modules a ratio of 0.1
     /// gives a 3px radius, and 0.5 turns isolated modules into circles.
     ///
     /// Only the SVG and raster image renderers support rounded corners; other
@@ -338,6 +349,11 @@ impl<'a, P: Pixel> Renderer<'a, P> {
                         } else {
                             canvas.draw_dark_rect(x * mw, y * mh, mw, mh);
                         }
+                    } else if is_rounded {
+                        let corners = self.concave_corners(x - qz, y - qz);
+                        if !corners.is_empty() {
+                            canvas.draw_dark_fillet(x * mw, y * mh, mw, mh, radius, corners);
+                        }
                     }
                     i += 1;
                 }
@@ -387,6 +403,32 @@ impl<'a, P: Pixel> Renderer<'a, P> {
             corners |= Corners::BOTTOM_RIGHT;
         }
         if !bottom && !left {
+            corners |= Corners::BOTTOM_LEFT;
+        }
+        corners
+    }
+
+    /// Returns the corners of the light module at (`x`, `y`) that sit inside
+    /// a bend of dark modules, i.e. whose two adjacent sides and diagonal
+    /// neighbor are all dark.
+    fn concave_corners(&self, x: u32, y: u32) -> Corners {
+        let (x, y) = (x.as_isize(), y.as_isize());
+        let top = self.is_dark(x, y - 1);
+        let bottom = self.is_dark(x, y + 1);
+        let left = self.is_dark(x - 1, y);
+        let right = self.is_dark(x + 1, y);
+
+        let mut corners = Corners::NONE;
+        if top && left && self.is_dark(x - 1, y - 1) {
+            corners |= Corners::TOP_LEFT;
+        }
+        if top && right && self.is_dark(x + 1, y - 1) {
+            corners |= Corners::TOP_RIGHT;
+        }
+        if bottom && right && self.is_dark(x + 1, y + 1) {
+            corners |= Corners::BOTTOM_RIGHT;
+        }
+        if bottom && left && self.is_dark(x - 1, y + 1) {
             corners |= Corners::BOTTOM_LEFT;
         }
         corners
